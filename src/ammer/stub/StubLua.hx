@@ -42,7 +42,8 @@ class StubLua {
       case String | Bytes if (size != null): 'lua_pushlstring(L, $expr, $size)';
       case String | Bytes: 'lua_pushstring(L, $expr)';
       case SameSizeAs(t, _): box(t, expr, size);
-      case _: trace(t); throw "!";
+      case LibType(_, _): 'lua_pushlightuserdata(L, $expr)';
+      case _: throw "!";
     });
   }
 
@@ -52,11 +53,16 @@ class StubLua {
       case Bool: 'lua_toboolean(L, $i)';
       case Int: 'lua_tointeger(L, $i)';
       case Float: 'lua_tonumber(L, $i)';
-      case String: 'lua_tostring(L, $i)';
-      case Bytes: 'lua_tostring(L, $i)';
+      case String:
+        lb.ai('size_t arg_${i - 1}_size = 0;\n');
+        'lua_tolstring(L, $i, &arg_${i - 1}_size)';
+      case Bytes:
+        lb.ai('size_t arg_${i - 1}_size = 0;\n');
+        '(unsigned char *)lua_tolstring(L, $i, &arg_${i - 1}_size)';
       case NoSize(t): unbox(t, i);
       case SizeOf(_): 'lua_tointeger(L, $i)';
       case SizeOfReturn: "0";
+      case LibType(_, _): 'lua_touserdata(L, $i)';
       case _: throw "!";
     });
   }
@@ -68,10 +74,14 @@ class StubLua {
       for (i in 0...method.args.length) {
         if (method.args[i] == SizeOfReturn)
           sizeOfReturn = 'arg_$i';
-        var unboxed = unbox(method.args[i], i);
+        var unboxed = unbox(method.args[i], i + 1);
         if (unboxed == null)
           continue;
-        lb.ai('${mapTypeC(method.args[i], 'arg_$i')} = ${unbox(method.args[i], i + 1)};\n');
+        lb.ai('${mapTypeC(method.args[i], 'arg_$i')} = $unboxed;\n');
+      }
+      switch (method.ret) {
+        case SameSizeAs(_, i): sizeOfReturn = 'arg_${i}_size';
+        case _:
       }
       if (method.cPrereturn != null)
         lb.ai('${method.cPrereturn}\n');
@@ -79,14 +89,14 @@ class StubLua {
         case SizeOfReturn: '&arg_$i';
         case _: 'arg_$i';
       } ].join(", ") + ')';
-      if (method.ret != Void)
+      if (method.ret == Void)
+        lb.ai("");
+      else
         lb.ai('${mapTypeC(method.ret, 'ret')} = ');
       if (method.cReturn != null)
-        lb.ai('${method.cReturn.replace("%CALL", call)};\n');
-      else if (method.ret != Void)
-        lb.a('$call;\n');
+        lb.a('${method.cReturn.replace("%CALL%", call)};\n');
       else
-        lb.ai('$call;\n');
+        lb.a('$call;\n');
       if (method.ret == Void)
         lb.ai("return 0;\n");
       else {
@@ -98,7 +108,34 @@ class StubLua {
     lb.ai("}\n");
   }
 
-  static function generateInit(ctx:AmmerContext):Void {
+  static function generateVariables(ctx:AmmerContext):Array<String> {
+    return [ for (t in ([
+      {ffi: Int, lua: "integer", name: "int"},
+      {ffi: String, lua: "string", name: "string"},
+      {ffi: Bool, lua: "boolean", name: "bool"},
+      {ffi: Float, lua: "number", name: "float"}
+    ]:Array<{ffi:FFIType, lua:String, name:String}>)) {
+      if (!ctx.varCounter.exists(t.ffi))
+        continue;
+      var method = 'g_${t.name}_${ctx.index}';
+      lb.ai('static int $method(lua_State *L) {\n');
+      lb.indent(() -> {
+        lb.ai("lua_newtable(L);\n");
+        for (variable in ctx.ffiVariables) {
+          if (variable.type == t.ffi) {
+            lb.ai('lua_pushinteger(L, ${variable.index});\n');
+            lb.ai('lua_push${t.lua}(L, ${variable.native});\n');
+            lb.ai("lua_settable(L, -3);\n");
+          }
+        }
+        lb.ai('return 1;\n');
+      });
+      lb.ai("}\n");
+      method;
+    } ];
+  }
+
+  static function generateInit(ctx:AmmerContext, varMethods:Array<String>):Void {
     lb.ai("#ifdef __cplusplus\n");
     lb.ai("extern \"C\" {\n");
     lb.ai("#endif\n");
@@ -109,7 +146,10 @@ class StubLua {
         for (method in ctx.ffiMethods) {
           lb.ai('{"${mapMethodName(method.name)}", ${mapMethodName(method.name)}},\n');
         }
-        lb.ai("{NULL, NULL}");
+        for (method in varMethods) {
+          lb.ai('{"$method", $method},\n');
+        }
+        lb.ai("{NULL, NULL}\n");
       });
       lb.ai("};\n");
       lb.ai("lua_newtable(L);\n");
@@ -134,8 +174,8 @@ class StubLua {
         generated[method.name] = true;
         generateMethod(method);
       }
-      // generateVariables(ctx);
-      generateInit(ctx);
+      var varMethods = generateVariables(ctx);
+      generateInit(ctx, varMethods);
     }
     Utils.update('${config.lua.build}/ammer_${library.name}.lua.${library.abi == Cpp ? "cpp" : "c"}', lb.dump());
   }

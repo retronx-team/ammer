@@ -74,7 +74,7 @@ LIB_EXPORT char *rev_string(char *a) {
 	int pos = 0;
 	while (*a != 0) cc[pos++] = utf8_decode((unsigned char **)&a);
 	char *retcur = ret;
-	while (pos >= 0) utf8_encode((unsigned char **)&retcur, cc[--pos]);
+	while (pos > 0) utf8_encode((unsigned char **)&retcur, cc[--pos]);
 	*retcur = '\0';
 	return ret;
 }
@@ -105,6 +105,17 @@ LIB_EXPORT unsigned char *give_bytes(int n, size_t *ret_size) {
 	for (int i = 0; i < n; i++) ret[i] = i + 1;
 	*ret_size = n;
 	return ret;
+}
+
+static int saved_num = 0;
+LIB_EXPORT void save_num(int num) {
+	saved_num = num;
+}
+LIB_EXPORT int get_saved_num(void) {
+	return saved_num;
+}
+LIB_EXPORT int *pointer_saved_num(void) {
+	return &saved_num;
 }
 
 static int (* cached_func)(int, int);

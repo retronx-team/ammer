@@ -12,20 +12,39 @@ class PatchLua {
       name: "ammerNative",
       pos: pos
     });
-    var load = 'package.loadlib("ammer_${ctx.libraryConfig.name}.dylib", "g_init_${ctx.index}")()';
+    var load = 'package.loadlib("${ammer.build.BuildTools.extensions('ammer_${ctx.libraryConfig.name}.%DLL%')}", "g_init_${ctx.index}")()';
     ctx.externFields.push({
       access: [AStatic],
       kind: FFun({
         args: [],
         expr: macro {
           ammerNative = untyped __lua__($v{load});
+          $b{[
+            for (t in ([
+              {ffi: Int, name: "int"},
+              {ffi: String, name: "string"},
+              {ffi: Bool, name: "bool"},
+              {ffi: Float, name: "float"}
+            ]:Array<{ffi:FFIType, name:String}>)) {
+              if (!ctx.varCounter.exists(t.ffi))
+                continue;
+              macro {
+                var values:lua.Table<Int, Any> = $p{["ammerNative", 'g_${t.name}_${ctx.index}']}();
+                $b{[ for (variable in ctx.ffiVariables) {
+                  if (variable.type != t.ffi)
+                    continue;
+                  // TODO: sub-module types
+                  macro $p{ctx.implType.pack.concat([ctx.implType.name, variable.name])} = values[$v{variable.index}];
+                } ]};
+              };
+            }
+          ]};
         },
         ret: (macro : Void)
       }),
       name: "__init__",
       pos: pos
     });
-    // TODO: variables
   }
 }
 
@@ -53,6 +72,14 @@ class PatchLuaMethod extends ammer.patch.PatchMethod {
         ret: mapType(ctx.ffi.ret)
       }),
       pos: ctx.ffi.field.pos
+    });
+  }
+
+  override function mapType(t:FFIType):ComplexType {
+    return (switch (t) {
+      case Bytes: (macro:String);
+      case LibType(id, _): Ammer.typeMap[id].nativeType;
+      case _: super.mapType(t);
     });
   }
 }
